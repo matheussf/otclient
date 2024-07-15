@@ -4,22 +4,18 @@ local TypeEvent = {
 }
 
 local function onGameStart(self)
-    if self.dataUI ~= nil and self.dataUI.onGameStart then
-        self.ui = g_ui.loadUI('/' .. self.name .. '/' .. self.dataUI.name, self.dataUI.parent or g_ui.getRootWidget())
-    end
-
     if self.__onGameStart ~= nil then
         self.currentTypeEvent = TypeEvent.GAME_INIT
         addEvent(function()
             self:__onGameStart()
-        end)
-    end
 
-    local eventList = self.events[TypeEvent.GAME_INIT]
-    if eventList ~= nil then
-        for actor, events in pairs(eventList) do
-            connect(actor, events)
-        end
+            local eventList = self.events[TypeEvent.GAME_INIT]
+            if eventList ~= nil then
+                for _, event in pairs(eventList) do
+                    event:connect()
+                end
+            end
+        end)
     end
 end
 
@@ -30,9 +26,20 @@ local function onGameEnd(self)
 
     local eventList = self.events[TypeEvent.GAME_INIT]
     if eventList ~= nil then
-        for actor, events in pairs(eventList) do
-            disconnect(actor, events)
+        for _, event in pairs(eventList) do
+            event:disconnect()
         end
+
+        self.events[TypeEvent.GAME_INIT] = nil
+    end
+
+    local scheduledEventsList = self.scheduledEvents[TypeEvent.GAME_INIT]
+    if scheduledEventsList then
+        for _, eventId in pairs(scheduledEventsList) do
+            removeEvent(eventId)
+        end
+
+        self.scheduledEvents[TypeEvent.GAME_INIT] = nil
     end
 
     if self.dataUI ~= nil and self.dataUI.onGameStart then
@@ -44,11 +51,12 @@ end
 Controller = {
     name = nil,
     events = nil,
+    scheduledEvents = nil,
     ui = nil,
-    externalEvents = nil,
     keyboardEvents = nil,
     attrs = nil,
-    opcodes = nil
+    opcodes = nil,
+    keyboardAnchor = nil
 }
 
 function Controller:new()
@@ -56,7 +64,7 @@ function Controller:new()
         name = g_modules.getCurrentModule():getName(),
         currentTypeEvent = TypeEvent.MODULE_INIT,
         events = {},
-        externalEvents = {},
+        scheduledEvents = {},
         keyboardEvents = {},
         attrs = {},
         opcodes = {}
@@ -67,8 +75,8 @@ function Controller:new()
 end
 
 function Controller:init()
-    if self.dataUI ~= nil and not self.dataUI.onGameStart then
-        self.ui = g_ui.loadUI('/' .. self.name .. '/' .. self.dataUI.name, self.dataUI.parent or g_ui.getRootWidget())
+    if self.dataUI ~= nil then
+        self:loadUI()
     end
 
     if self.onInit then
@@ -80,6 +88,7 @@ function Controller:init()
     self.onGameStart = function()
         onGameStart(self)
     end
+
     connect(g_game, {
         onGameStart = self.onGameStart
     })
@@ -97,18 +106,33 @@ function Controller:init()
         onGameEnd = self.onGameEnd
     })
 
-    self:connectExternalEvents()
-
     local eventList = self.events[TypeEvent.MODULE_INIT]
-    if eventList ~= nil then
-        for actor, events in pairs(eventList) do
-            connect(actor, events)
+    if eventList then
+        for _, event in pairs(eventList) do
+            event:connect()
         end
     end
 end
 
-function Controller:setUI(name, parent, onGameStart)
-    self.dataUI = { name = name, parent = parent, onGameStart = onGameStart or false }
+function Controller:loadUI(name, parent)
+    if self.ui then
+        error('The UI has already been created.')
+        return
+    end
+
+    if not self.dataUI then
+        self:setUI(name, parent)
+    end
+
+    self.ui = g_ui.loadUI('/' .. self.name .. '/' .. self.dataUI.name, self.dataUI.parent or g_ui.getRootWidget())
+end
+
+function Controller:setKeyboardAnchor(widget)
+    self.keyboardAnchor = widget
+end
+
+function Controller:setUI(name, parent)
+    self.dataUI = { name = name, parent = parent, onGameStart = self.currentTypeEvent == TypeEvent.GAME_INIT }
 end
 
 function Controller:terminate()
@@ -126,19 +150,26 @@ function Controller:terminate()
     end
 
     for i, event in pairs(self.keyboardEvents) do
-        g_keyboard['unbind' .. event.name](event.args)
+        g_keyboard['unbind' .. event.name](event.args[1], event.args[2], event.args[3])
     end
 
     for i, opcode in pairs(self.opcodes) do
         ProtocolGame.unregisterExtendedOpcode(opcode)
     end
 
-    self:disconnectExternalEvents()
+    for type, events in pairs(self.events) do
+        if events ~= nil then
+            for _, event in pairs(events) do
+                event:disconnect()
+            end
+        end
+    end
 
-    local eventList = self.events[TypeEvent.MODULE_INIT]
-    if eventList ~= nil then
-        for actor, events in pairs(eventList) do
-            disconnect(actor, events)
+    for type, events in pairs(self.scheduledEvents) do
+        if events ~= nil then
+            for _, eventId in pairs(events) do
+                removeEvent(eventId)
+            end
         end
     end
 
@@ -146,80 +177,33 @@ function Controller:terminate()
         self.ui:destroy()
     end
 
+    self.ui = nil
+    self.attrs = nil
     self.events = nil
     self.dataUI = nil
-    self.ui = nil
-    self.keyboardEvents = nil
-    self.attrs = nil
     self.opcodes = nil
-    self.externalEvents = nil
+    self.keyboardEvents = nil
+    self.keyboardAnchor = nil
+    self.scheduledEvents = nil
+
     self.__onGameStart = nil
     self.__onGameEnd = nil
 end
 
-function Controller:addEvent(actor, events)
-    local evt = EventController:new(actor, events)
-    table.insert(self.externalEvents, evt)
-    return evt
-end
-
-function Controller:attachExternalEvent(event)
-    table.insert(self.externalEvents, event)
-end
-
-function Controller:connectExternalEvents()
-    for i, event in pairs(self.externalEvents) do
-        event:connect()
-    end
-end
-
-function Controller:disconnectExternalEvents()
-    for i, event in pairs(self.externalEvents) do
-        event:disconnect()
-    end
-end
-
+--[[
+    If you register an event in onInit() or in the general scope of the script,
+    the event will be automatically registered at startup and disconnected when the module is destroyed.
+    If it is inside onGameStart(), the events will be connected when entering the game map and disconnected when leaving and also when the module is destroyed.
+]]
 function Controller:registerEvents(actor, events)
     if self.events[self.currentTypeEvent] == nil then
         self.events[self.currentTypeEvent] = {}
     end
 
-    self.events[self.currentTypeEvent][actor] = events
-end
+    local evt = EventController:new(actor, events)
+    table.insert(self.events[self.currentTypeEvent], evt)
 
-function Controller:connectEvents(actor, events)
-    if type(actor) == 'table' then
-        for _, target in pairs(actor) do
-            self:connectEvents(target, events)
-        end
-        return
-    end
-
-    if not events then
-        events = self.events[actor]
-    else
-        self.events[actor] = events
-    end
-
-    assert(events ~= nil, 'Events are empty')
-    connect(actor, events)
-end
-
-function Controller:disconnectEvents(actor, destroy)
-    if type(actor) == 'table' then
-        for _, target in pairs(actor) do
-            self:disconnectEvents(target, destroy)
-        end
-        return
-    end
-
-    local events = self.events[actor]
-    if events then
-        disconnect(actor, events)
-        if destroy ~= false then
-            self.events[actor] = nil
-        end
-    end
+    return evt
 end
 
 function Controller:registerExtendedOpcode(opcode, fnc)
@@ -234,45 +218,106 @@ function Controller:sendExtendedOpcode(opcode, ...)
     end
 end
 
-function Controller:bindKeyDown(key, ...)
-    table.insert(self.keyboardEvents, {
-        name = 'KeyDown',
-        key = key,
-        args = ...
-    })
-    g_keyboard.bindKeyDown(key, ...)
-end
+local function registerScheduledEvent(controller, fncRef, fnc, delay, name)
+    local currentType = controller.currentTypeEvent
+    if controller.scheduledEvents[currentType] == nil then
+        controller.scheduledEvents[currentType] = {}
+    end
 
-function Controller:unbindKeyDown(key, ...)
-    for index, entry in pairs(self.keyboardEvents) do
-        if entry.key == key then
-            table.remove(self.keyboardEvents, index)
-            break
+    local _rmvEvent = function()
+        if controller.scheduledEvents[currentType][name] then
+            removeEvent(controller.scheduledEvents[currentType][name])
+            controller.scheduledEvents[currentType][name] = nil
+        end
+    end
+    _rmvEvent()
+
+    local evt = nil
+    local action = function()
+        fnc()
+
+        if fncRef == scheduleEvent then
+            if name then
+                _rmvEvent()
+            else
+                table.removevalue(controller.scheduledEvents[currentType], evt)
+            end
         end
     end
 
+    evt = fncRef(action, delay)
+
+    if name then
+        controller.scheduledEvents[currentType][name] = evt
+    else
+        table.insert(controller.scheduledEvents[currentType], evt)
+    end
+
+    return evt
+end
+
+function Controller:scheduleEvent(fnc, delay, name)
+    return registerScheduledEvent(self, scheduleEvent, fnc, delay, name)
+end
+
+function Controller:cycleEvent(fnc, delay, name)
+    return registerScheduledEvent(self, cycleEvent, fnc, delay, name)
+end
+
+function Controller:removeEvent(evt)
+    if self.scheduledEvents[TypeEvent.GAME_INIT] then
+        if table.removevalue(self.scheduledEvents[TypeEvent.GAME_INIT], evt) then
+            removeEvent(evt)
+            return
+        end
+    end
+
+    if self.scheduledEvents[TypeEvent.MODULE_INIT] then
+        if table.find(self.scheduledEvents[TypeEvent.MODULE_INIT], evt) then
+            error('It is not possible to remove events registered at controller init.')
+            return
+        end
+    end
+
+    error('The event was not registered by the controller.')
+end
+
+function Controller:bindKeyDown(...)
+    local args = { ... }
+    if args[3] == nil or type(args[3]) == 'boolean' then
+        args[4] = args[3]
+        args[3] = self.keyboardAnchor
+    end
     table.insert(self.keyboardEvents, {
         name = 'KeyDown',
-        key = key,
-        args = ...
+        args = args
     })
-    g_keyboard.unbindKeyDown(key, ...)
+    g_keyboard.bindKeyDown(args[1], args[2], args[3])
 end
 
-function Controller:bindKeyUp(key, ...)
+function Controller:bindKeyUp(...)
+    local args = { ... }
+    if args[3] == nil or type(args[3]) == 'boolean' then
+        args[4] = args[3]
+        args[3] = self.keyboardAnchor
+    end
     table.insert(self.keyboardEvents, {
         name = 'KeyUp',
-        key = key,
-        args = ...
+        args = args
     })
-    g_keyboard.bindKeyUp(key, ...)
+
+    g_keyboard.bindKeyUp(args[1], args[2], args[3])
 end
 
-function Controller:bindKeyPress(key, ...)
+function Controller:bindKeyPress(...)
+    local args = { ... }
+    if args[3] == nil or type(args[3]) == 'boolean' then
+        args[4] = args[3]
+        args[3] = self.keyboardAnchor
+    end
     table.insert(self.keyboardEvents, {
         name = 'KeyPress',
-        key = key,
-        args = ...
+        args = args
     })
-    g_keyboard.bindKeyPress(key, ...)
+    g_keyboard.bindKeyPress(args[1], args[2], args[3])
 end
