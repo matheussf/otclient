@@ -77,6 +77,7 @@ local buttons = {{
 local extraWidgets = {
     audioButton = nil,
     optionsButton = nil,
+    logoutButton = nil,
     optionsButtons = nil
 }
 
@@ -130,6 +131,19 @@ local function setupComboBox()
     floorViewModeCombobox.onOptionChange = function(comboBox, option)
         setOption('floorViewMode', comboBox:getCurrentOption().data)
     end
+
+    if not g_game.isEnabledBotProtection() then
+        local profileCombobox = panels.misc:recursiveGetChildById('profile')
+
+        for i = 1, 10 do
+            profileCombobox:addOption(tostring(i), i)
+        end
+
+        profileCombobox.onOptionChange = function(comboBox, option)
+            setOption('profile', comboBox:getCurrentOption().data)
+        end
+    end
+
 end
 
 local function setup()
@@ -166,10 +180,14 @@ function controller:onInit()
         g_settings.setDefault(k, obj.value)
     end
 
-    extraWidgets.optionsButton = modules.client_topmenu.addTopRightToggleButton('optionsButton', tr('Options'),
-        '/images/topbuttons/button_options', toggle)
     extraWidgets.audioButton = modules.client_topmenu.addTopRightToggleButton('audioButton', tr('Audio'),
         '/images/topbuttons/button_mute_up', function() toggleOption('enableAudio') end)
+        
+    extraWidgets.optionsButton = modules.client_topmenu.addTopRightToggleButton('optionsButton', tr('Options'),
+        '/images/topbuttons/button_options', toggle)
+
+    extraWidgets.logoutButton = modules.client_topmenu.addTopRightToggleButton('logoutButton', tr('Exit'),
+            '/images/topbuttons/logout', toggle)
 
     panels.generalPanel = g_ui.loadUI('styles/controls/general',controller.ui.optionsTabContent)
 

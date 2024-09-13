@@ -27,7 +27,7 @@ local function onGameEnd(self)
     local eventList = self.events[TypeEvent.GAME_INIT]
     if eventList ~= nil then
         for _, event in pairs(eventList) do
-            event:disconnect()
+            event:destroy()
         end
 
         self.events[TypeEvent.GAME_INIT] = nil
@@ -43,9 +43,16 @@ local function onGameEnd(self)
     end
 
     if self.dataUI ~= nil and self.dataUI.onGameStart and self.ui then
-        self.ui:destroy()
-        self.ui = nil
+        self:destroyUI()
     end
+
+    table.remove_if(self.keyboardEvents, function(i, event)
+        local destroy = event.controllerEventType == TypeEvent.GAME_INIT
+        if destroy then
+            g_keyboard['unbind' .. event.name](event.args[1], event.args[2], event.args[3])
+        end
+        return destroy
+    end)
 end
 
 Controller = {
@@ -118,33 +125,47 @@ end
 function Controller:loadHtml(path, parent)
     local suffix = ".html"
     if path:sub(- #suffix) ~= suffix then
-        path = path .. '.html'
+        path = path .. suffix
     end
+
     self:setUI(path, parent)
     self.htmlRoot = HtmlLoader('/' .. self.name .. '/' .. path, parent, self)
     self.ui = self.htmlRoot.widget
+end
+
+function Controller:destroyUI()
+    if self.htmlRoot ~= nil then
+        self.htmlRoot.widget = nil
+        self.htmlRoot = nil
+    end
+
+    if self.ui then
+        self.ui:destroy()
+        self.ui = nil
+    end
+
+    for type, events in pairs(self.events) do
+        table.remove_if(events, function(i, event)
+            local canRemove = event:actorIsDestroyed()
+            if canRemove then
+                event:destroy() -- force destroy
+            end
+            return canRemove
+        end)
+    end
 end
 
 function Controller:findElements(query)
     return self.htmlRoot and self.htmlRoot:find(query:trim()) or {}
 end
 
+function Controller:findWidgets(query)
+    return self.htmlRoot and self.htmlRoot:findWidgets(query:trim()) or {}
+end
+
 function Controller:findElement(query)
     local els = self:findElements(query)
     return #els > 0 and els[1] or nil
-end
-
-function Controller:findWidgets(query)
-    local els = self:findElements(query)
-
-    local widgets = {}
-    for _, el in pairs(els) do
-        if el.widget then
-            table.insert(widgets, el.widget)
-        end
-    end
-
-    return widgets
 end
 
 function Controller:findWidget(query)
@@ -197,7 +218,7 @@ function Controller:terminate()
     for type, events in pairs(self.events) do
         if events ~= nil then
             for _, event in pairs(events) do
-                event:disconnect()
+                event:destroy()
             end
         end
     end
@@ -328,7 +349,8 @@ function Controller:bindKeyDown(...)
     end
     table.insert(self.keyboardEvents, {
         name = 'KeyDown',
-        args = args
+        args = args,
+        controllerEventType = self.currentTypeEvent
     })
     g_keyboard.bindKeyDown(args[1], args[2], args[3])
 end
@@ -341,7 +363,8 @@ function Controller:bindKeyUp(...)
     end
     table.insert(self.keyboardEvents, {
         name = 'KeyUp',
-        args = args
+        args = args,
+        controllerEventType = self.currentTypeEvent
     })
 
     g_keyboard.bindKeyUp(args[1], args[2], args[3])
@@ -355,7 +378,8 @@ function Controller:bindKeyPress(...)
     end
     table.insert(self.keyboardEvents, {
         name = 'KeyPress',
-        args = args
+        args = args,
+        controllerEventType = self.currentTypeEvent
     })
     g_keyboard.bindKeyPress(args[1], args[2], args[3])
 end
